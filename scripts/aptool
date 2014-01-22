@@ -225,6 +225,15 @@ ipython_parser.set_defaults(func=activepapers.cli.ipython)
 
 ##################################################
 
+notebook_parser = subparsers.add_parser('notebook',
+                                       help="Run an IPython notebook server"
+                                            " inside the ActivePaper")
+notebook_parser.add_argument('--modify', '-m', action='store_true',
+                            help="Permit modifications (use with care)")
+notebook_parser.set_defaults(func=activepapers.cli.ipython_notebook)
+
+##################################################
+
 def setup_logging(log, logfile):
     if log is None:
         log = "WARNING"

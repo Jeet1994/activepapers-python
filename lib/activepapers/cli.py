@@ -558,3 +558,14 @@ def ipython(paper, modify):
     data = paper.data
     IPython.embed()
     paper.close()
+
+def ipython_notebook(paper, modify):
+    from IPython.html.notebookapp import NotebookApp
+    from IPython.kernel import make_ipkernel_cmd
+
+    kernel_cmd = make_ipkernel_cmd('from activepapers.ipkernel import main; '
+                                   'main()')
+    app = NotebookApp()
+    app.config.KernelManager.kernel_cmd = kernel_cmd
+    app.initialize(argv=[])
+    app.start()
