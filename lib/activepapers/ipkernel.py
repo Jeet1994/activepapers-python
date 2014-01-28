@@ -14,9 +14,17 @@ class ActivePapersKernel(Kernel):
     def __init__(self, **kwargs):
         super(ActivePapersKernel, self).__init__(**kwargs)
 
+    def execute_request(self, stream, ident, parent):
+        content = parent[u'content']
+        code = content[u'code']
+        self.log.info("Exec request for '%s'", code)
+        super(ActivePapersKernel, self).execute_request(stream, ident, parent)
+        self.log.info("Exec request handled.")
+
 def main():
     """Run an IPKernel as an application"""
     app = IPKernelApp.instance()
     app.config.IPKernelApp.kernel_class = 'activepapers.ipkernel.ActivePapersKernel'
+    #app.config.IPKernelApp.log_level='DEBUG'
     app.initialize()
     app.start()
