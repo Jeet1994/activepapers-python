@@ -537,6 +537,9 @@ class ActivePaper(object):
         if not path.startswith('data/') \
            and not path.startswith('documentation/'):
             raise IOError((13, "Permission denied: '%s'" % path))
+        self._open_internal_file(path, mode, creator)
+
+    def _open_internal_file(self, path, mode='r', creator=None):
         if creator is None:
             creator = ExternalCode(self)
         if mode[0] in ['r', 'a']:
