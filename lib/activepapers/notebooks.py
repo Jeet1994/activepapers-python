@@ -1,5 +1,7 @@
 import itertools
 
+import os
+
 from tornado import web
 
 from IPython.html.services.notebooks.nbmanager import NotebookManager
@@ -8,7 +10,7 @@ from IPython.utils.traitlets import Bool, Unicode, TraitError
 from IPython.utils import tz
 
 from activepapers.storage import ActivePaper
-from activepapers.utility import mod_time, stamp
+from activepapers.utility import mod_time, timestamp
 
 class ActivePapersNotebookManager(NotebookManager):
 
@@ -21,6 +23,15 @@ class ActivePapersNotebookManager(NotebookManager):
         super(ActivePapersNotebookManager, self).__init__(**kwargs)
         self.paper = None
         self.may_write = False
+
+    def info_string(self):
+        return "Serving notebooks from ActivePaper %s" % self.active_paper_path
+
+    def get_os_path(self, name=None, path=''):
+        # This is a quick hack to get started. We should create
+        # an empty temporary directory without any write permissions
+        # to enforce the "no local files" policy.
+        return os.getcwd()
 
     def open_ap_read(self):
         if self.paper is None:
@@ -73,6 +84,10 @@ class ActivePapersNotebookManager(NotebookManager):
         # empty path.
         return len(path) == 0
 
+    def get_base_name(self, name):
+        assert name.endswith(".ipynb")
+        return name[:-6]
+
     def notebook_exists(self, name, path=''):
         """Returns a True if the notebook exists. Else, returns False.
 
@@ -87,31 +102,35 @@ class ActivePapersNotebookManager(NotebookManager):
         -------
         bool
         """
-        if name.endswith('.ipynb'):
-            self.log.debug("notebook_exists: removing extension from notebook name %s", name)
-            name = name[:-6]
-        path = path.strip('/')
+        assert len(path) == 0
         self.open_ap_read()
         notebook_group = self.get_notebook_group()
         if notebook_group is None:
             return False
-        return name in notebook_group
+        return self.get_base_name(name) in notebook_group
 
     def increment_filename(self, basename, path=''):
         """Increment a notebook name to make it unique.
-        
+
         Parameters
         ----------
         basename : unicode
-            The name of a notebook
+            The base name of a notebook (no extension .ipynb)
         path : unicode
             The URL path of the notebooks directory
+
+        Returns
+        -------
+        filename : unicode
+            The complete filename (with extension .ipynb) for
+            a new notebook, guaranteed not to exist yet.
         """
-        assert path == ''
-        notebook_group = self.get_notebook_group()
+        assert self.path_exists(path)
+
         for i in itertools.count():
-            name = u'{basename}{i}'.format(basename=basename, i=i)
-            if notebook_group is None or name not in notebook_group:
+            name = u'{basename}{i}{ext}'.format(basename=basename, i=i,
+                                                ext=".ipynb")
+            if not self.notebook_exists(name, path):
                 break
         return name
 
@@ -126,16 +145,14 @@ class ActivePapersNotebookManager(NotebookManager):
 
             data = sorted(data, key=lambda item: item['name'])
         """
-        if path:
-            raise ValueError("path is %s" % str(path))
+        self.log.debug("list_notebooks '%s'", path)
+        assert path == ''
         self.open_ap_read()
         notebook_group = self.get_notebook_group()
         if notebook_group is None:
             return []
-        notebooks = []
-        for name in notebook_group:
-            model = self.get_notebook_model(name, path, content=False)
-            notebooks.append(model)
+        notebooks = [self.get_notebook_model(name+".ipynb", path, content=False)
+                     for name in notebook_group]
         return sorted(notebooks, key=lambda item: item['name'])
 
     def get_notebook_model(self, name, path='', content=True):
@@ -156,67 +173,56 @@ class ActivePapersNotebookManager(NotebookManager):
             dict in the model as well.
         """
 
-        if name.endswith('.ipynb'):
-            self.log.debug("get_notebook_model: removing extension from notebook name %s", name)
-            name = name[:-6]
-        path = path.strip('/')
         if not self.notebook_exists(name=name, path=path):
             raise web.HTTPError(404, u'Notebook does not exist: %s' % name)
         notebook_group = self.get_notebook_group()
         # Create the notebook model.
-        model ={}
-        model['name'] = name
-        model['path'] = path
+        model = dict(name=name, path=path)
+        name = self.get_base_name(name)
         timestamp = mod_time(notebook_group[name]['json'])
         model['last_modified'] = tz.utcfromtimestamp(timestamp)
-        #model['created'] = created
+        timestamp = mod_time(notebook_group[name])
+        model['created'] = tz.utcfromtimestamp(timestamp)
         if content is True:
             assert path == ''
             ds_path = 'notebooks/%s/json' % name
             with self.paper._open_internal_file(ds_path, 'r') as f:
-                model['content'] = current.read(f, u'json')
-        return model
-
-    def create_notebook_model(self, model=None, path=''):
-        """Create a new notebook and return its model with no content."""
-        path = path.strip('/')
-        if model is None:
-            model = {}
-        if 'content' not in model:
-            metadata = current.new_metadata(name=u'')
-            model['content'] = current.new_notebook(metadata=metadata)
-        if 'name' not in model:
-            model['name'] = self.increment_filename('Untitled', path)
-            
-        model['path'] = path
-        model = self.save_notebook_model(model, model['name'], model['path'])
+                nb = current.read(f, u'json')
+            self.mark_trusted_cells(nb, path, name)
+            model['content'] = nb
         return model
 
     def save_notebook_model(self, model, name, path=''):
         """Save the notebook model and return the model with no content."""
-        path = path.strip('/')
-
         if 'content' not in model:
             raise web.HTTPError(400, u'No notebook JSON data provided')
         
-        new_path = model.get('path', path).strip('/')
+        # One checkpoint should always exist
+        if self.notebook_exists(name, path) \
+           and not self.list_checkpoints(name, path):
+            self.create_checkpoint(name, path)
+
+        new_path = model.get('path', path)
         new_name = model.get('name', name)
 
         if path != new_path or name != new_name:
-            self.rename_notebook(name, path, new_name, new_path)
+            self._rename_notebook(name, path, new_name, new_path)
 
         self.open_ap_read_write()
         notebook_group = self.get_notebook_group()
-        if new_name not in notebook_group:
-            notebook_group.create_group(new_name)
+        new_name_base = self.get_base_name(new_name)
+        if new_name_base not in notebook_group:
+            notebook_group.create_group(new_name_base)
+            timestamp(notebook_group[new_name_base])
 
-        # Save the notebook file
+        # Save the notebook to an internal file
         nb = current.to_notebook_json(model['content'])
+        self.check_and_sign(nb, new_path, new_name)
         if 'name' in nb['metadata']:
             nb['metadata']['name'] = u''
         try:
             assert new_path == ''
-            ds_path = 'notebooks/%s/json' % new_name
+            ds_path = 'notebooks/%s/json' % new_name_base
             self.log.debug("Autosaving notebook %s", ds_path)
             with self.paper._open_internal_file(ds_path, 'w') as f:
                 current.write(nb, f, u'json')
@@ -224,7 +230,7 @@ class ActivePapersNotebookManager(NotebookManager):
             raise web.HTTPError(400, u'Unexpected error while autosaving notebook: %s %s' % (ds_path, e))
 
         # Save .py script as well
-        ds_path = 'notebooks/%s/%s/py' % (new_path, new_name)
+        ds_path = 'notebooks/%s/%s/py' % (new_path, new_name_base)
         self.log.debug("Writing script %s", ds_path)
         try:
             with self.paper._open_internal_file(ds_path, 'w') as f:
@@ -233,64 +239,72 @@ class ActivePapersNotebookManager(NotebookManager):
             raise web.HTTPError(400, u'Unexpected error while saving notebook as script: %s %s' % (ds_path, e))
 
         model = self.get_notebook_model(new_name, new_path, content=False)
+        self.log.debug("save_notebook_model -> %s", model)
         return model
 
-    def rename_notebook(self, name, path, new_name, new_path):
+    def _rename_notebook(self, name, path, new_name, new_path):
         """Rename a notebook."""
-        raise NotImplementedError
+        assert path == ''
+        assert new_path == ''
+        notebook_group = self.get_notebook_group()
+        notebook_group.move(self.get_base_name(name),
+                            self.get_base_name(new_name))
 
-    # def load_notebook_names(self):
-    #     """On startup load the notebook ids and names from OpenStack Swift.
-    #     """
-    #     raise NotImplementedError
+    def update_notebook_model(self, model, name, path=''):
+        """Update the notebook's path and/or name"""
+        assert self.notebook_exists(name, path)
 
-    # def read_notebook_object(self, notebook_id):
-    #     """Get the object representation of a notebook by notebook_id."""
-    #     raise NotImplementedError
+        new_name = model.get('name', name)
+        new_path = model.get('path', path)
+        if path != new_path or name != new_name:
+            self._rename_notebook(name, path, new_name, new_path)
+        model = self.get_notebook_model(new_name, new_path, content=False)
+        return model
 
-    # def write_notebook_object(self, nb, notebook_id=None):
-    #     """Save an existing notebook object by notebook_id."""
-    #     raise NotImplementedError
+    def create_checkpoint(self, name, path=''):
+        """Create a checkpoint of the current state of a notebook
 
-    # def delete_notebook(self, notebook_id):
-    #     """Delete notebook by notebook_id.
+        Returns a dictionary with entries "id" and
+        "last_modified" describing the checkpoint.
+        """
+        assert self.notebook_exists(name, path)
+        assert path == ''
+        
+        notebook = self.get_notebook_group()[self.get_base_name(name)]
+        checkpoints = [ds_name for ds_name in notebook
+                       if ds_name.startswith('checkpoint-')]
+        if checkpoints:
+            highest = max(int(cp.split('-')[1]) for cp in checkpoints)
+        else:
+            highest = 0
+        checkpoint_id = "checkpoint-%d" % (highest+1)
+        timestamp = mod_time(notebook['json'])
+        last_modified = tz.utcfromtimestamp(timestamp)
+        notebook[checkpoint_id] = notebook['json']
+        return dict(id=checkpoint_id, last_modified=last_modified)
 
-    #     Also deletes checkpoints for the notebook.
-    #     """
-    #     raise NotImplementedError
+    def list_checkpoints(self, name, path=''):
+        """Return a list of checkpoints for a given notebook"""
+        assert self.notebook_exists(name, path)
 
-    # def get_checkpoint_path(self, notebook_id, checkpoint_id):
-    #     """Returns the canonical checkpoint path based on the notebook_id and
-    #     checkpoint_id
-    #     """
-    #     raise NotImplementedError
+        notebook = self.get_notebook_group()[self.get_base_name(name)]
+        checkpoints = [ds_name for ds_name in notebook
+                       if ds_name.startswith('checkpoint-')]
+        return [dict(id=cp,
+                     last_modified=tz.utcfromtimestamp(mod_time(notebook[cp])))
+                for cp in checkpoints]
 
-    # def new_checkpoint_id(self):
-    #     """Generate a new checkpoint_id and store its mapping."""
-    #     raise NotImplementedError
+    def restore_checkpoint(self, checkpoint_id, name, path=''):
+        """Restore a notebook from one of its checkpoints"""
+        assert self.notebook_exists(name, path)
 
-    # def create_checkpoint(self, notebook_id):
-    #     """Create a checkpoint of the current state of a notebook
+        notebook = self.get_notebook_group()[self.get_base_name(name)]
+        del notebook['json']
+        notebook['json'] = notebook[checkpoint_id]
 
-    #     Returns a dictionary with a checkpoint_id and the timestamp from the
-    #     last modification
-    #     """
-    #     raise NotImplementedError
+    def delete_checkpoint(self, checkpoint_id, name, path=''):
+        """delete a checkpoint for a notebook"""
+        assert self.notebook_exists(name, path)
 
-    # def list_checkpoints(self, notebook_id):
-    #     """Return a list of checkpoints for a given notebook"""
-    #     raise NotImplementedError
-
-    # def restore_checkpoint(self, notebook_id, checkpoint_id):
-    #     """Restore a notebook from one of its checkpoints.
-
-    #     Actually overwrites the existing notebook
-    #     """
-    #     raise NotImplementedError
-
-    # def delete_checkpoint(self, notebook_id, checkpoint_id):
-    #     """Delete a checkpoint for a notebook"""
-    #     raise NotImplementedError
-
-    def info_string(self):
-        return "Serving notebooks from ActivePaper %s" % self.active_paper_path
+        notebook = self.get_notebook_group()[self.get_base_name(name)]
+        del notebook[checkpoint]
