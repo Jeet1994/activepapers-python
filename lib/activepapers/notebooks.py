@@ -63,6 +63,7 @@ class ActivePapersNotebookManager(NotebookManager):
         notebook_group = self.paper.file.get('notebooks', None)
         if notebook_group is None and self.may_write:
             notebook_group = self.paper.file.create_group('notebooks')
+            timestamp(notebook_group)
         return notebook_group
 
     def path_exists(self, path):
@@ -83,6 +84,24 @@ class ActivePapersNotebookManager(NotebookManager):
         # /notebooks. This means that the only valid path is the
         # empty path.
         return len(path) == 0
+
+    def is_hidden(self, path):
+        """Does the API style path correspond to a hidden directory or file?
+        
+        Parameters
+        ----------
+        path : string
+            The path to check. This is an API path (`/` separated,
+            relative to base notebook-dir).
+        
+        Returns
+        -------
+        hidden : bool
+            Whether the path is hidden.
+        
+        """
+        # Nothing is hidden.
+        return False
 
     def get_base_name(self, name):
         assert name.endswith(".ipynb")
@@ -192,6 +211,36 @@ class ActivePapersNotebookManager(NotebookManager):
             model['content'] = nb
         return model
 
+    def list_dirs(self, path):
+        """List the directory models for a given API style path."""
+        return []
+
+    def get_dir_model(self, name, path=''):
+        """Get the directory model given a directory name and its API style path.
+        
+        The keys in the model should be:
+        * name
+        * path
+        * last_modified
+        * created
+        * type='directory'
+        """
+        path = path.strip()
+        if not self.path_exists(path):
+            raise IOError('directory does not exist: %r' % path)
+        notebook_group = self.get_notebook_group()
+        timestamp = mod_time(notebook_group)
+        # Create the directory model.
+        model ={}
+        model['name'] = name
+        model['path'] = path
+        model['last_modified'] = tz.utcfromtimestamp(timestamp)
+        model['created'] = tz.utcfromtimestamp(timestamp)
+        model['type'] = 'directory'
+        self.log.debug("get_dir_model('%s', '%s') -> %s",
+                       name, path, str(model))
+        return model
+
     def save_notebook_model(self, model, name, path=''):
         """Save the notebook model and return the model with no content."""
         if 'content' not in model:
@@ -260,6 +309,12 @@ class ActivePapersNotebookManager(NotebookManager):
             self._rename_notebook(name, path, new_name, new_path)
         model = self.get_notebook_model(new_name, new_path, content=False)
         return model
+
+    def delete_notebook_model(self, name, path=''):
+        """Delete notebook by name and path."""
+        assert self.notebook_exists(name, path)
+        notebook_group = self.get_notebook_group()
+        del notebook_group[name]
 
     def create_checkpoint(self, name, path=''):
         """Create a checkpoint of the current state of a notebook
