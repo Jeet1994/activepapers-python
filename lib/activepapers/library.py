@@ -108,9 +108,38 @@ def _get_doi(label):
     else:
         raise ValueError("Unrecognized DOI: %s" % label)
 
+def _get_academic_torrents(label):
+    # The current non-working code assumes that a torrent
+    # contains a single ActivePaper, identified by the sole
+    # hash. Torrents can contain multiple files, which can be
+    # requested individually, so it's worth considering
+    # a hash/filename format for the label, in order to permit
+    # the grouped distribution of related ActivePapers.
+    #
+    # API documentation of transmissionrpc:
+    #    http://packages.python.org/transmissionrpc/
+    dir_name = os.path.join(library[0], "academictorrents")
+    local_filename = os.path.join(dir_name, label + ".ap")
+    if os.path.exists(local_filename):
+        return local_filename
+    if not os.path.exists(dir_name):
+        os.mkdir(dir_name)
+    # Download using Transmission
+    import transmissionrpc
+    tc = transmissionrpc.Client('localhost', port=9091)
+    torrent = tc.add_torrent('http://academictorrents.com/download/%s.torrent'
+                             % label, paused=True)
+    torrent_id = list(torrent.keys())[0]
+    torrent = torrent[torrent_id]
+    nfiles = len(torrent.files())
+    if nfiles != 1:
+        raise ValueError("Torrent 'academictorrents:%s' contains %d files "
+                         "(must be exactly one)" % (label, len(torrent.files())))
+    raise ValueError("Failed: 'academictorrents:%s'" % label)
 
 download_handlers = {'local': _get_local_file,
-                     'doi': _get_doi}
+                     'doi': _get_doi,
+                     'academictorrents': _get_academic_torrents}
 
 def find_in_library(paper_ref):
     ref_type, label = split_paper_ref(paper_ref)
