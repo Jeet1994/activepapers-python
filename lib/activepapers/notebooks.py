@@ -128,31 +128,6 @@ class ActivePapersNotebookManager(NotebookManager):
             return False
         return self.get_base_name(name) in notebook_group
 
-    def increment_filename(self, basename, path=''):
-        """Increment a notebook name to make it unique.
-
-        Parameters
-        ----------
-        basename : unicode
-            The base name of a notebook (no extension .ipynb)
-        path : unicode
-            The URL path of the notebooks directory
-
-        Returns
-        -------
-        filename : unicode
-            The complete filename (with extension .ipynb) for
-            a new notebook, guaranteed not to exist yet.
-        """
-        assert self.path_exists(path)
-
-        for i in itertools.count():
-            name = u'{basename}{i}{ext}'.format(basename=basename, i=i,
-                                                ext=".ipynb")
-            if not self.notebook_exists(name, path):
-                break
-        return name
-
     def list_notebooks(self, path=''):
         """Return a list of notebook dicts without content.
 
@@ -170,11 +145,11 @@ class ActivePapersNotebookManager(NotebookManager):
         notebook_group = self.get_notebook_group()
         if notebook_group is None:
             return []
-        notebooks = [self.get_notebook_model(name+".ipynb", path, content=False)
+        notebooks = [self.get_notebook(name+".ipynb", path, content=False)
                      for name in notebook_group]
         return sorted(notebooks, key=lambda item: item['name'])
 
-    def get_notebook_model(self, name, path='', content=True):
+    def get_notebook(self, name, path='', content=True):
         """ Takes a path and name for a notebook and returns its model
         
         Parameters
@@ -241,7 +216,7 @@ class ActivePapersNotebookManager(NotebookManager):
                        name, path, str(model))
         return model
 
-    def save_notebook_model(self, model, name, path=''):
+    def save_notebook(self, model, name, path=''):
         """Save the notebook model and return the model with no content."""
         if 'content' not in model:
             raise web.HTTPError(400, u'No notebook JSON data provided')
@@ -287,8 +262,8 @@ class ActivePapersNotebookManager(NotebookManager):
         except Exception as e:
             raise web.HTTPError(400, u'Unexpected error while saving notebook as script: %s %s' % (ds_path, e))
 
-        model = self.get_notebook_model(new_name, new_path, content=False)
-        self.log.debug("save_notebook_model -> %s", model)
+        model = self.get_notebook(new_name, new_path, content=False)
+        self.log.debug("save_notebook -> %s", model)
         return model
 
     def _rename_notebook(self, name, path, new_name, new_path):
@@ -299,7 +274,7 @@ class ActivePapersNotebookManager(NotebookManager):
         notebook_group.move(self.get_base_name(name),
                             self.get_base_name(new_name))
 
-    def update_notebook_model(self, model, name, path=''):
+    def update_notebook(self, model, name, path=''):
         """Update the notebook's path and/or name"""
         assert self.notebook_exists(name, path)
 
@@ -307,10 +282,10 @@ class ActivePapersNotebookManager(NotebookManager):
         new_path = model.get('path', path)
         if path != new_path or name != new_name:
             self._rename_notebook(name, path, new_name, new_path)
-        model = self.get_notebook_model(new_name, new_path, content=False)
+        model = self.get_notebook(new_name, new_path, content=False)
         return model
 
-    def delete_notebook_model(self, name, path=''):
+    def delete_notebook(self, name, path=''):
         """Delete notebook by name and path."""
         assert self.notebook_exists(name, path)
         notebook_group = self.get_notebook_group()
