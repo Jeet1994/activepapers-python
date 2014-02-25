@@ -564,12 +564,14 @@ def ipython_notebook(paper, modify):
     from IPython.config.loader import Config
     from IPython.kernel import make_ipkernel_cmd
 
+    paper_path = get_paper(paper)
+    kernel_args = [paper_path, str(1 if modify else 0)]
     kernel_cmd = make_ipkernel_cmd('from activepapers.ipkernel import main; '
-                                   'main()')
+                                   'main()', extra_arguments=kernel_args)
     c = Config()
     c.KernelManager.kernel_cmd = kernel_cmd
     c.NotebookApp.notebook_manager_class = 'activepapers.notebooks.ActivePapersNotebookManager'
-    c.ActivePapersNotebookManager.active_paper_path = get_paper(paper)
+    c.ActivePapersNotebookManager.active_paper_path = paper_path
     c.ActivePapersNotebookManager.active_paper_may_write = modify
     app = NotebookApp(config=c)
     app.initialize(argv=[])

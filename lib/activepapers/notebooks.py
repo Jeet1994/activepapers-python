@@ -17,7 +17,8 @@ class ActivePapersNotebookManager(NotebookManager):
     active_paper_path = Unicode(config=True)
     active_paper_may_write = Bool(config=True)
 
-    filename_ext = Unicode(u'')
+    # We don't use notebook_dir, but IPython requires it to exist.
+    notebook_dir = Unicode(config=True)
 
     def __init__(self, **kwargs):
         super(ActivePapersNotebookManager, self).__init__(**kwargs)
@@ -26,12 +27,6 @@ class ActivePapersNotebookManager(NotebookManager):
 
     def info_string(self):
         return "Serving notebooks from ActivePaper %s" % self.active_paper_path
-
-    def get_os_path(self, name=None, path=''):
-        # This is a quick hack to get started. We should create
-        # an empty temporary directory without any write permissions
-        # to enforce the "no local files" policy.
-        return os.getcwd()
 
     def open_ap_read(self):
         if self.paper is None:
@@ -57,6 +52,11 @@ class ActivePapersNotebookManager(NotebookManager):
             self.may_write = True
             self.paper = ActivePaper(self.active_paper_path, 'r+')
         self.log.debug("ActivePaper %s open read-write", self.active_paper_path)
+
+    def close_ap(self):
+        if self.paper is not None:
+            self.paper.close()
+            self.paper = None
 
     def get_notebook_group(self):
         assert self.paper is not None
@@ -126,7 +126,9 @@ class ActivePapersNotebookManager(NotebookManager):
         notebook_group = self.get_notebook_group()
         if notebook_group is None:
             return False
-        return self.get_base_name(name) in notebook_group
+        exists = self.get_base_name(name) in notebook_group
+        self.close_ap()
+        return exists
 
     def list_notebooks(self, path=''):
         """Return a list of notebook dicts without content.
@@ -147,6 +149,7 @@ class ActivePapersNotebookManager(NotebookManager):
             return []
         notebooks = [self.get_notebook(name+".ipynb", path, content=False)
                      for name in notebook_group]
+        self.close_ap()
         return sorted(notebooks, key=lambda item: item['name'])
 
     def get_notebook(self, name, path='', content=True):
@@ -218,6 +221,10 @@ class ActivePapersNotebookManager(NotebookManager):
 
     def save_notebook(self, model, name, path=''):
         """Save the notebook model and return the model with no content."""
+
+        self.log.debug("save_notebook(%s, '%s', '%s')",
+                       model, str(name), str(path))
+
         if 'content' not in model:
             raise web.HTTPError(400, u'No notebook JSON data provided')
         
@@ -263,6 +270,7 @@ class ActivePapersNotebookManager(NotebookManager):
             raise web.HTTPError(400, u'Unexpected error while saving notebook as script: %s %s' % (ds_path, e))
 
         model = self.get_notebook(new_name, new_path, content=False)
+        self.close_ap()
         self.log.debug("save_notebook -> %s", model)
         return model
 
