@@ -30,7 +30,11 @@ import activepapers.standardlib
 #    and for manual re-execution.
 #
 
-class Codelet(object):
+class Executable(object):
+
+    pass
+
+class Codelet(Executable):
 
     def __init__(self, paper, node):
         self.paper = paper

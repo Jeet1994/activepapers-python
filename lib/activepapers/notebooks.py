@@ -3,6 +3,7 @@ import itertools
 import os
 
 from tornado import web
+from lockfile import LockFile
 
 from IPython.html.services.notebooks.nbmanager import NotebookManager
 from IPython.nbformat import current
@@ -24,14 +25,27 @@ class ActivePapersNotebookManager(NotebookManager):
         super(ActivePapersNotebookManager, self).__init__(**kwargs)
         self.paper = None
         self.may_write = False
+        if self.active_paper_may_write:
+            self.lock = LockFile(self.active_paper_path)
+        else:
+            self.lock = None
 
     def info_string(self):
         return "Serving notebooks from ActivePaper %s" % self.active_paper_path
 
     def open_ap_read(self):
+        self.log.debug("open_ap_read: %s",
+                       self.active_paper_path)
         if self.paper is None:
+            self.log.debug("opening %s",
+                           self.active_paper_path)
+            if self.lock is not None:
+                self.lock.acquire()
             self.may_write = False
             self.paper = ActivePaper(self.active_paper_path, 'r')
+        else:
+            self.log.debug("%s is already open",
+                           self.active_paper_path)
         self.log.debug("ActivePaper %s open for reading",
                        self.active_paper_path)
 
@@ -48,7 +62,11 @@ class ActivePapersNotebookManager(NotebookManager):
             if not self.may_write:
                 self.paper.close()
                 self.paper = None
+                if self.lock is not None:
+                    self.lock.release()
         if self.paper is None:
+            if self.lock is not None:
+                self.lock.acquire()
             self.may_write = True
             self.paper = ActivePaper(self.active_paper_path, 'r+')
         self.log.debug("ActivePaper %s open read-write", self.active_paper_path)
@@ -57,6 +75,8 @@ class ActivePapersNotebookManager(NotebookManager):
         if self.paper is not None:
             self.paper.close()
             self.paper = None
+            if self.lock is not None:
+                self.lock.release()
 
     def get_notebook_group(self):
         assert self.paper is not None
@@ -172,6 +192,7 @@ class ActivePapersNotebookManager(NotebookManager):
 
         if not self.notebook_exists(name=name, path=path):
             raise web.HTTPError(404, u'Notebook does not exist: %s' % name)
+        self.open_ap_read()
         notebook_group = self.get_notebook_group()
         # Create the notebook model.
         model = dict(name=name, path=path)
@@ -187,6 +208,7 @@ class ActivePapersNotebookManager(NotebookManager):
                 nb = current.read(f, u'json')
             self.mark_trusted_cells(nb, path, name)
             model['content'] = nb
+        self.close_ap()
         return model
 
     def list_dirs(self, path):
@@ -261,16 +283,16 @@ class ActivePapersNotebookManager(NotebookManager):
             raise web.HTTPError(400, u'Unexpected error while autosaving notebook: %s %s' % (ds_path, e))
 
         # Save .py script as well
-        ds_path = 'notebooks/%s/%s/py' % (new_path, new_name_base)
+        ds_path = 'notebooks/%s/py' % new_name_base
         self.log.debug("Writing script %s", ds_path)
         try:
             with self.paper._open_internal_file(ds_path, 'w') as f:
                 current.write(nb, f, u'py')
         except Exception as e:
             raise web.HTTPError(400, u'Unexpected error while saving notebook as script: %s %s' % (ds_path, e))
+        self.close_ap()
 
         model = self.get_notebook(new_name, new_path, content=False)
-        self.close_ap()
         self.log.debug("save_notebook -> %s", model)
         return model
 
@@ -278,6 +300,7 @@ class ActivePapersNotebookManager(NotebookManager):
         """Rename a notebook."""
         assert path == ''
         assert new_path == ''
+        self.open_ap_read_write()
         notebook_group = self.get_notebook_group()
         notebook_group.move(self.get_base_name(name),
                             self.get_base_name(new_name))
@@ -308,6 +331,7 @@ class ActivePapersNotebookManager(NotebookManager):
         assert self.notebook_exists(name, path)
         assert path == ''
         
+        self.open_ap_read_write()
         notebook = self.get_notebook_group()[self.get_base_name(name)]
         checkpoints = [ds_name for ds_name in notebook
                        if ds_name.startswith('checkpoint-')]
@@ -319,30 +343,38 @@ class ActivePapersNotebookManager(NotebookManager):
         timestamp = mod_time(notebook['json'])
         last_modified = tz.utcfromtimestamp(timestamp)
         notebook[checkpoint_id] = notebook['json']
+        self.close_ap()
         return dict(id=checkpoint_id, last_modified=last_modified)
 
     def list_checkpoints(self, name, path=''):
         """Return a list of checkpoints for a given notebook"""
         assert self.notebook_exists(name, path)
 
+        self.open_ap_read()
         notebook = self.get_notebook_group()[self.get_base_name(name)]
         checkpoints = [ds_name for ds_name in notebook
                        if ds_name.startswith('checkpoint-')]
-        return [dict(id=cp,
-                     last_modified=tz.utcfromtimestamp(mod_time(notebook[cp])))
-                for cp in checkpoints]
+        cps = [dict(id=cp,
+                    last_modified=tz.utcfromtimestamp(mod_time(notebook[cp])))
+               for cp in checkpoints]
+        self.close_ap()
+        return cps
 
     def restore_checkpoint(self, checkpoint_id, name, path=''):
         """Restore a notebook from one of its checkpoints"""
         assert self.notebook_exists(name, path)
 
+        self.open_ap_read_write()
         notebook = self.get_notebook_group()[self.get_base_name(name)]
         del notebook['json']
         notebook['json'] = notebook[checkpoint_id]
+        self.close_ap()
 
     def delete_checkpoint(self, checkpoint_id, name, path=''):
         """delete a checkpoint for a notebook"""
         assert self.notebook_exists(name, path)
 
+        self.open_ap_read_write()
         notebook = self.get_notebook_group()[self.get_base_name(name)]
         del notebook[checkpoint]
+        self.close_ap()
