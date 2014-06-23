@@ -17,41 +17,16 @@ from activepapers.utility import ascii, isstring, execstring, \
 import activepapers.standardlib
 
 #
-# A codelet is a Python script inside a paper.
-#
-# Codelets come in several varieties:
-#
-#  - Calclets can only access datasets inside the paper.
-#    Their computations are reproducible.
-#
-#  - Importlets create datasets in the paper based on external resources.
-#    Their results are not reproducible, and in general they are not
-#    executable in a different environment. They are stored as documentation
-#    and for manual re-execution.
+# A paper can contain various kinds of executables. Running code
+# from an executable invokes the dependency tracking mechanisms.
+# The two main varieties of executables are codelets, which are
+# Python scripts, and notebooks, which are run interactively.
 #
 
 class Executable(object):
 
-    pass
-
-class Codelet(Executable):
-
-    def __init__(self, paper, node):
-        self.paper = paper
-        self.node = node
-        self._dependencies = None
-        assert node.name.startswith('/code/')
-        self.path = node.name
-
     def dependency_attributes(self):
-        if self._dependencies is None:
-            return {'ACTIVE_PAPER_GENERATING_CODELET': self.path}
-        else:
-            deps = list(self._dependencies)
-            deps.append(ascii(self.path))
-            deps.sort()
-            return {'ACTIVE_PAPER_GENERATING_CODELET': self.path,
-                    'ACTIVE_PAPER_DEPENDENCIES': deps}
+        return NotImplementedError
 
     def add_dependency(self, dependency):
         pass
@@ -78,6 +53,39 @@ class Codelet(Executable):
 
     def open_documentation_file(self, path, mode='r'):
         return self._open_file(path, mode, '/documentation')
+
+
+#
+# A codelet is a Python script inside a paper.
+#
+# Codelets come in two varieties:
+#
+#  - Calclets can only access datasets inside the paper.
+#    Their computations are reproducible.
+#
+#  - Importlets create datasets in the paper based on external resources.
+#    Their results are not reproducible, and in general they are not
+#    executable in a different environment. They are stored as documentation
+#    and for manual re-execution.
+#
+
+class Codelet(Executable):
+
+    def __init__(self, paper, node):
+        self.paper = paper
+        self.node = node
+        self._dependencies = None
+        assert node.name.startswith('/code/')
+        self.path = node.name
+
+    def dependency_attributes(self):
+        attrs = {'ACTIVE_PAPER_GENERATING_CODELET': self.path}
+        if self._dependencies is not None:
+            deps = list(self._dependencies)
+            deps.append(ascii(self.path))
+            deps.sort()
+            attrs['ACTIVE_PAPER_DEPENDENCIES'] = deps
+        return attrs
 
     def _run(self, environment):
         logging.info("Running %s %s"
@@ -172,6 +180,22 @@ class Calclet(Codelet):
             if node is not None and node.in_paper(self.paper):
                 self.add_dependency(node.name)
 
+
+#
+# Notebooks contain Python code that is run interactively through
+# the IPython notebook interface.
+#
+
+class Notebook(Executable):
+
+    def dependency_attributes(self):
+        attrs = {'ACTIVE_PAPER_GENERATING_NOTEBOOK': self.path}
+        if self._dependencies is not None:
+            deps = list(self._dependencies)
+            deps.append(ascii(self.path))
+            deps.sort()
+            attrs['ACTIVE_PAPER_DEPENDENCIES'] = deps
+        return attrs
 
 #
 # The attrs attribute of datasets and groups is wrapped
