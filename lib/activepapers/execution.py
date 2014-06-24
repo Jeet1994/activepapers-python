@@ -21,6 +21,9 @@ import activepapers.standardlib
 # from an executable invokes the dependency tracking mechanisms.
 # The two main varieties of executables are codelets, which are
 # Python scripts, and notebooks, which are run interactively.
+# Notebooks are handled in module activepapers.ipkernel.
+# The classes Executable and RestrictedExecutable are abstract
+# base classes that provide methods for codelets and notebooks.
 #
 
 class Executable(object):
@@ -30,6 +33,9 @@ class Executable(object):
 
     def add_dependency(self, dependency):
         pass
+
+    def track_and_check_import(self, module_name):
+        return
 
     def owns(self, node):
         return owner(node) == self.path
@@ -54,6 +60,54 @@ class Executable(object):
     def open_documentation_file(self, path, mode='r'):
         return self._open_file(path, mode, '/documentation')
 
+    def _dependency_attributes(self, path):
+        attrs = {'ACTIVE_PAPER_GENERATING_CODELET': path}
+        if self._dependencies is not None:
+            deps = list(self._dependencies)
+            deps.append(ascii(path))
+            deps.sort()
+            attrs['ACTIVE_PAPER_DEPENDENCIES'] = deps
+        return attrs
+
+    def _prepare_execution(self):
+        # Remove all datasets owned by the executable.
+        # These are results from previous runs that are no longer
+        # up to date.
+        self.paper.remove_owned_by(self.path)
+        # A string uniquely identifying the paper from which the
+        # calclet is called. Used in Importer.
+        paper_id = hex(id(self.paper))[2:]
+        # Create the special module activepapers.contents
+        self._contents_module = imp.new_module('activepapers.contents')
+        self._contents_module.data = DataGroup(self.paper, None,
+                                               self.paper.data_group, self)
+        self._contents_module.open = self.open_data_file
+        self._contents_module.open_documentation = self.open_documentation_file
+        self._contents_module.snapshot = self.paper.snapshot
+        # Return paper_id
+        return paper_id
+
+class RestrictedExecutable(Executable):
+
+    def add_dependency(self, dependency):
+        assert isinstance(self._dependencies, set)
+        self._dependencies.add(ascii(dependency))
+
+    def track_and_check_import(self, module_name):
+        if module_name == 'activepapers.contents':
+            return
+        node = self.paper.get_local_module(module_name)
+        if node is None:
+            top_level = module_name.split('.')[0]
+            if top_level not in self.paper.dependencies \
+               and top_level not in activepapers.standardlib.allowed_modules \
+               and top_level not in ['numpy', 'h5py']:
+                raise ImportError("import of %s not allowed" % module_name)
+        else:
+            if datatype(node) != "module":
+                node = node.get("__init__", None)
+            if node is not None and node.in_paper(self.paper):
+                self.add_dependency(node.name)
 
 #
 # A codelet is a Python script inside a paper.
@@ -69,7 +123,7 @@ class Executable(object):
 #    and for manual re-execution.
 #
 
-class Codelet(Executable):
+class Codelet(object):
 
     def __init__(self, paper, node):
         self.paper = paper
@@ -79,29 +133,14 @@ class Codelet(Executable):
         self.path = node.name
 
     def dependency_attributes(self):
-        attrs = {'ACTIVE_PAPER_GENERATING_CODELET': self.path}
-        if self._dependencies is not None:
-            deps = list(self._dependencies)
-            deps.append(ascii(self.path))
-            deps.sort()
-            attrs['ACTIVE_PAPER_DEPENDENCIES'] = deps
-        return attrs
+        return self._dependency_attributes(self.path)
 
     def _run(self, environment):
         logging.info("Running %s %s"
                      % (self.__class__.__name__.lower(), self.path))
-        self.paper.remove_owned_by(self.path)
-        # A string uniquely identifying the paper from which the
-        # calclet is called. Used in Importer.
-        paper_id = hex(id(self.paper))[2:]
+        paper_id = self._prepare_execution()
         script = ascii(self.node[...].flat[0])
         script = compile(script, ':'.join([paper_id, self.path]), 'exec')
-        self._contents_module = imp.new_module('activepapers.contents')
-        self._contents_module.data = DataGroup(self.paper, None,
-                                               self.paper.data_group, self)
-        self._contents_module.open = self.open_data_file
-        self._contents_module.open_documentation = self.open_documentation_file
-        self._contents_module.snapshot = self.paper.snapshot
 
         # The remaining part of this method is not thread-safe because
         # of the way the global state in sys.modules is modified.
@@ -133,14 +172,11 @@ codelet_lock = threading.Lock()
 # generated themselves. This is not enforced at the moment.
 #
 
-class Importlet(Codelet):
+class Importlet(Codelet, Executable):
 
     def run(self):
         environment = {'__builtins__': activepapers.utility.builtins.__dict__}
         self._run(environment)
-
-    def track_and_check_import(self, module_name):
-        return
 
 #
 # Calclets are run in a restricted execution environment:
@@ -152,50 +188,13 @@ class Importlet(Codelet):
 # execution in order to build the dependency graph.
 #
 
-class Calclet(Codelet):
+class Calclet(Codelet, RestrictedExecutable):
 
     def run(self):
         self._dependencies = set()
         environment = {'__builtins__':
                        activepapers.utility.ap_builtins.__dict__}
         self._run(environment)
-
-    def add_dependency(self, dependency):
-        assert isinstance(self._dependencies, set)
-        self._dependencies.add(ascii(dependency))
-
-    def track_and_check_import(self, module_name):
-        if module_name == 'activepapers.contents':
-            return
-        node = self.paper.get_local_module(module_name)
-        if node is None:
-            top_level = module_name.split('.')[0]
-            if top_level not in self.paper.dependencies \
-               and top_level not in activepapers.standardlib.allowed_modules \
-               and top_level not in ['numpy', 'h5py']:
-                raise ImportError("import of %s not allowed" % module_name)
-        else:
-            if datatype(node) != "module":
-                node = node.get("__init__", None)
-            if node is not None and node.in_paper(self.paper):
-                self.add_dependency(node.name)
-
-
-#
-# Notebooks contain Python code that is run interactively through
-# the IPython notebook interface.
-#
-
-class Notebook(Executable):
-
-    def dependency_attributes(self):
-        attrs = {'ACTIVE_PAPER_GENERATING_NOTEBOOK': self.path}
-        if self._dependencies is not None:
-            deps = list(self._dependencies)
-            deps.append(ascii(self.path))
-            deps.sort()
-            attrs['ACTIVE_PAPER_DEPENDENCIES'] = deps
-        return attrs
 
 #
 # The attrs attribute of datasets and groups is wrapped
