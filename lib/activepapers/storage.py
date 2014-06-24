@@ -375,16 +375,18 @@ class ActivePaper(object):
         def walk(group):
             for node in group.values():
                 if isinstance(node, h5py.Group) \
-                   and datatype(node) != 'data':
+                   and datatype(node) not in ['data', 'notebook']:
                     for gnode in walk(node):
                         yield gnode
                 else:
                     yield node
         for group in [self.code_group,
                       self.data_group,
-                      self.documentation_group]:
-            for node in walk(group):
-                yield node
+                      self.documentation_group,
+                      self.file.get('notebooks', None)]:
+            if group is not None:
+                for node in walk(group):
+                    yield node
 
     def iter_groups(self):
         """
@@ -393,15 +395,17 @@ class ActivePaper(object):
         def walk(group):
             for node in group.values():
                 if isinstance(node, h5py.Group) \
-                   and datatype(node) != 'data':
+                   and datatype(node) not in ['data', 'notebook']:
                     yield node
                     for subnode in walk(node):
                         yield subnode
         for group in [self.code_group,
                       self.data_group,
-                      self.documentation_group]:
-            for node in walk(group):
-                yield node
+                      self.documentation_group,
+                      self.file.get('notebooks', None)]:
+            if group is not None:
+                for node in walk(group):
+                    yield node
 
     def iter_dependencies(self, item):
         """

@@ -11,7 +11,7 @@ from IPython.utils.traitlets import Bool, Unicode, TraitError
 from IPython.utils import tz
 
 from activepapers.storage import ActivePaper
-from activepapers.utility import mod_time, timestamp
+from activepapers.utility import mod_time, stamp, timestamp
 
 class ActivePapersNotebookManager(NotebookManager):
 
@@ -266,7 +266,7 @@ class ActivePapersNotebookManager(NotebookManager):
         new_name_base = self.get_base_name(new_name)
         if new_name_base not in notebook_group:
             notebook_group.create_group(new_name_base)
-            timestamp(notebook_group[new_name_base])
+            stamp(notebook_group[new_name_base], 'notebook', {})
 
         # Save the notebook to an internal file
         nb = current.to_notebook_json(model['content'])
