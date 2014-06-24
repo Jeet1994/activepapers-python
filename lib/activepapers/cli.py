@@ -574,6 +574,6 @@ def ipython_notebook(paper, modify):
     c.ActivePapersNotebookManager.active_paper_path = paper_path
     c.ActivePapersNotebookManager.active_paper_may_write = modify
     app = NotebookApp(config=c)
-    app.initialize(argv=[])
+    app.initialize(argv=['--profile=activepapers'])
     app.log.debug("Config: %s", str(app.config))
     app.start()

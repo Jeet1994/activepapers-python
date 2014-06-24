@@ -3,8 +3,10 @@
 
 var initEnvironment = function(name,value) {
     try {
-        var cmd = "import os\n" +
-            "os.environ['" + name + "'] = '" + value + "'\n";
+        var cmd = "import os as _activepapers_os_\n" +
+                  "_activepapers_os_.environ['" + name + "'] = '"
+                     + value + "'\n" +
+                  "del _activepapers_os_\n";
         IPython.notebook.kernel.execute(cmd, {}, {'silent' : true});
     }
     catch (error) {
