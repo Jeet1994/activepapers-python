@@ -1,3 +1,4 @@
+import os
 import sys
 
 from lockfile import LockFile
@@ -15,7 +16,7 @@ import activepapers.execution
 # A special kernel will intercept communication with the notebook
 # server and transfer write access to the ActivePapers file to
 # the process that needs it.
-class ActivePapersKernel(Kernel):
+class ActivePapersKernel(Kernel, activepapers.execution.RestrictedExecutable):
 
     active_paper_path = Unicode(config=True)
     active_paper_may_write = Bool(config=True)
@@ -28,22 +29,43 @@ class ActivePapersKernel(Kernel):
         else:
             self.lock = None
             self.mode = 'r'
+        self.has_notebook_name = False
 
     def execute_request(self, stream, ident, parent):
         content = parent[u'content']
         code = content[u'code']
-        self.log.debug("Exec request in '%s' for '%s'",
-                       self.active_paper_path, code)
-        if self.lock is not None:
-            self.lock.acquire()
-        self.paper = activepapers.storage.ActivePaper(self.active_paper_path,
-                                                      self.mode)
-        ex = activepapers.execution.Executable()
-        super(ActivePapersKernel, self).execute_request(stream, ident, parent)
-        self.paper.close()
-        if self.lock is not None:
-            self.lock.release()
-        self.log.debug("Exec request handled.")
+        if code.startswith("import os as _activepapers_os_"):
+            self.log.debug("Special exec request in '%s' for '%s'",
+                           self.active_paper_path, code)
+            super(ActivePapersKernel, self).execute_request(stream, ident,
+                                                            parent)
+            self.log.debug("Exec request handled.")
+            self.has_notebook_name = True
+        else:
+            assert self.has_notebook_name
+            self.log.debug("Exec request in '%s' for '%s'",
+                           self.active_paper_path, code)
+            if self.lock is not None:
+                self.lock.acquire()
+            self.paper = activepapers.storage.ActivePaper(self.active_paper_path,
+                                                          self.mode)
+            h5path = '/'.join(["/notebooks",
+                               os.environ['notebook_path'],
+                               os.environ['notebook_name'],])
+            paper_id = self._prepare_execution(h5path)
+            super(ActivePapersKernel, self).execute_request(stream, ident,
+                                                            parent)
+            self._cleanup_execution(h5path, paper_id)
+            self.paper.close()
+            if self.lock is not None:
+                self.lock.release()
+            self.log.debug("Exec request handled.")
+
+    def dependency_attributes(self):
+        h5path = '/'.join(["/notebooks",
+                           os.environ['notebook_path'],
+                           os.environ['notebook_name'],])
+        return self._dependency_attributes(h5path)
 
 def main():
     """Run an IPKernel as an application"""
