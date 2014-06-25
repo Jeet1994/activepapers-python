@@ -69,23 +69,46 @@ class Executable(object):
             attrs['ACTIVE_PAPER_DEPENDENCIES'] = deps
         return attrs
 
-    def _prepare_execution(self):
+    def _prepare_execution(self, path):
         # Remove all datasets owned by the executable.
         # These are results from previous runs that are no longer
         # up to date.
-        self.paper.remove_owned_by(self.path)
+        self.paper.remove_owned_by(path)
+
         # A string uniquely identifying the paper from which the
         # calclet is called. Used in Importer.
         paper_id = hex(id(self.paper))[2:]
+
         # Create the special module activepapers.contents
-        self._contents_module = imp.new_module('activepapers.contents')
-        self._contents_module.data = DataGroup(self.paper, None,
-                                               self.paper.data_group, self)
-        self._contents_module.open = self.open_data_file
-        self._contents_module.open_documentation = self.open_documentation_file
-        self._contents_module.snapshot = self.paper.snapshot
+        contents_module = imp.new_module('activepapers.contents')
+        contents_module.data = DataGroup(self.paper, None,
+                                         self.paper.data_group, self)
+        contents_module.open = self.open_data_file
+        contents_module.open_documentation = self.open_documentation_file
+        contents_module.snapshot = self.paper.snapshot
+
+        # Acquire codelet lock - only one codelet can run at a time
+        codelet_lock.acquire()
+
+        # Register codelet
+        codelet_registry[(paper_id, path)] = self
+
+        # Activate local modules
+        for name, module in self.paper._local_modules.items():
+            assert name not in sys.modules
+            sys.modules[name] = module
+        sys.modules['activepapers.contents'] = contents_module
+
         # Return paper_id
         return paper_id
+
+    def _cleanup_execution(self, path, paper_id):
+        del codelet_registry[(paper_id, path)]
+        if 'activepapers.contents' in sys.modules:
+            del sys.modules['activepapers.contents']
+        for name, module in self.paper._local_modules.items():
+            del sys.modules[name]
+        codelet_lock.release()
 
 class RestrictedExecutable(Executable):
 
@@ -138,26 +161,14 @@ class Codelet(object):
     def _run(self, environment):
         logging.info("Running %s %s"
                      % (self.__class__.__name__.lower(), self.path))
-        paper_id = self._prepare_execution()
-        script = ascii(self.node[...].flat[0])
-        script = compile(script, ':'.join([paper_id, self.path]), 'exec')
+        paper_id = self._prepare_execution(self.path)
+        try:
+            script = ascii(self.node[...].flat[0])
+            script = compile(script, ':'.join([paper_id, self.path]), 'exec')
+            execstring(script, environment)
+        finally:
+            self._cleanup_execution(self.path, paper_id)
 
-        # The remaining part of this method is not thread-safe because
-        # of the way the global state in sys.modules is modified.
-        with codelet_lock:
-            try:
-                codelet_registry[(paper_id, self.path)] = self
-                for name, module in self.paper._local_modules.items():
-                    assert name not in sys.modules
-                    sys.modules[name] = module
-                execstring(script, environment)
-            finally:
-                del codelet_registry[(paper_id, self.path)]
-                self._contents_module = None
-                if 'activepapers.contents' in sys.modules:
-                    del sys.modules['activepapers.contents']
-                for name, module in self.paper._local_modules.items():
-                    del sys.modules[name]
 
 codelet_lock = threading.Lock()
 
@@ -525,8 +536,8 @@ class Importer(object):
         codelet, paper = get_codelet_and_paper()
         if paper is None or codelet is None:
             return None
-        if fullname == 'activepapers.contents':
-            return APContentsLoader(codelet)
+        # if fullname == 'activepapers.contents':
+        #     return APContentsLoader(codelet)
         node = paper.get_local_module(fullname)
         if node is None:
             # No corresponding node found
@@ -544,17 +555,6 @@ class Importer(object):
             # Node found but is not a Python module
             return None
         return ModuleLoader(paper, fullname, node, is_package)
-
-
-class APContentsLoader(object):
-
-    def __init__(self, codelet):
-        self.codelet = codelet
-
-    def load_module(self, fullname):
-        assert fullname == 'activepapers.contents'
-        sys.modules[fullname] = self.codelet._contents_module
-        return self.codelet._contents_module
 
 
 class ModuleLoader(object):
